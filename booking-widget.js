@@ -7,13 +7,13 @@
  *   data-accent, data-text, data-on, data-dark
  *   data-rooms='{"AC Standard":{"title":"AC Room","desc":"..."}}'
  *   data-rules='{"AC Standard":{"minAdults":1,"maxAdults":3,"maxTotal":3,"combos":[[2,2]],"msg":"..."}}'
- *   data-rates='{"AC Standard":{"1":1200,"2":1500,"extra":400,"child":0},"Family Room":{"4":3000,"extra":500}}'
- *      (rates are per room per night before GST; leave out to use the price returned by the server)
  */
 (function () {
   'use strict';
   var script = document.currentScript;
-  var API = (script.getAttribute('data-api') || '').replace(/\/+$/, '');
+  // PASTE YOUR CLOUDFLARE ADDRESS BETWEEN THE QUOTES BELOW, for example 'https://hotelvijay-booking.yourname.workers.dev/api'
+  var API_ADDRESS = 'https://hotelvijay-booking.vijayniketan5.workers.dev/api';
+  var API = (API_ADDRESS || script.getAttribute('data-api') || '').replace(/\/+$/, '');
   var WA = (script.getAttribute('data-whatsapp') || '').replace(/\D/g, '');
   var ACCENT = script.getAttribute('data-accent') || '#0e7a8c';
   var TEXT = script.getAttribute('data-text') || '';
@@ -22,7 +22,7 @@
   var mount = document.getElementById(script.getAttribute('data-target') || 'hv-booking');
   if (!mount) return;
   function parseAttr(n) { try { return JSON.parse(script.getAttribute(n) || '{}'); } catch (e) { return {}; } }
-  var INFO = parseAttr('data-rooms'), RULES = parseAttr('data-rules'), RATES = parseAttr('data-rates');
+  var INFO = parseAttr('data-rooms'), RULES = parseAttr('data-rules');
 
   var ADULT_FROM_AGE = 5;   // child aged 5 or more is treated as an adult
   var MAX_ROOMS = 5, MAX_ADULTS = 6, MAX_KIDS = 4, MAX_AGE = 12;
@@ -47,16 +47,6 @@
     if (o.a < R.minAdults || o.a > R.maxAdults) return false;
     if (o.a + o.k <= R.maxTotal && o.k <= (R.maxKids == null ? 99 : R.maxKids)) return true;
     return (R.combos || []).some(function (c) { return o.a === c[0] && o.k <= c[1]; });
-  }
-  // per room per night, before GST; null when no rate table is set for this room type
-  function nightlyRate(type, o) {
-    var rt = RATES[type];
-    if (!rt) return null;
-    var keys = Object.keys(rt).filter(function (k) { return /^\d+$/.test(k); }).map(Number).sort(function (a, b) { return a - b; });
-    if (!keys.length) return null;
-    var k = keys[0];
-    keys.forEach(function (x) { if (x <= o.a) k = x; });
-    return +rt[k] + Math.max(0, o.a - k) * (+rt.extra || 0) + o.k * (+rt.child || 0);
   }
 
   /* ---------- styles ---------- */
@@ -126,11 +116,10 @@
   }
   function typeInfo(type) { return S.av.types.filter(function (t) { return t.type === type; })[0]; }
 
-  // price of one room of the given type for that room's occupancy
+  // price of one room: the server prices each room by number of adults (children aged 4 and under are free)
   function roomPrice(type, r) {
-    var t = typeInfo(type), rate = nightlyRate(type, occ(r));
-    if (rate == null) return { total: t.total, perNight: t.perNight };
-    return { total: rate * S.av.nights * (1 + (S.av.taxPct || 0) / 100), perNight: rate };
+    var t = typeInfo(type), p = t.byAdults && t.byAdults[occ(r).a];
+    return p ? { total: p.total, perNight: p.perNight } : { total: t.total, perNight: t.perNight };
   }
   function usedOf(type, except) {
     var n = 0;
