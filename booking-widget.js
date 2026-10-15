@@ -1,5 +1,5 @@
 /*
- * Hotel Vijay booking widget (v2: adults / children / child ages, per-room occupancy rules).
+ * Hotel Vijay booking widget (v4: prices from PMS Rates, Inventory and Promotions; adults / children / child ages, per-room occupancy rules).
  * Add to any page:
  *   <div id="hv-booking"></div>
  *   <script src="booking-widget.js" data-api="https://hotelvijay-booking.vijayniketan5.workers.dev/api" data-whatsapp="919835620220"></script>
@@ -87,6 +87,7 @@
 .hvb select option{background:Canvas;color:CanvasText}\
 .hvb .sum{border:1px solid rgba(127,127,127,.3);border-radius:10px;padding:12px 14px;margin:10px 0;background:rgba(127,127,127,.05)}\
 .hvb .sum div{padding:3px 0}\
+.hvb .was{text-decoration:line-through;opacity:.6}.hvb .promo{color:var(--a);font-weight:600;opacity:1!important}\
 ' + (DARK ? '.hvb input,.hvb select{color-scheme:dark}' : '') + '\
 ';
   var st = document.createElement('style');
@@ -110,7 +111,10 @@
   var newRoom = function () { return { adults: 2, kids: [] }; };
 
   var today = ymd(new Date());
-  var S = { step: 1, in: today, out: addDays(today, 1), rooms: [newRoom()], av: null, pick: [], busy: false, err: '', guest: { name: '', phone: '', email: '', nationality: 'Indian' }, done: null, snap: null };
+  var QP = {}; (location.search || '').replace(/^\?/, '').split('&').forEach(function (x) { var k = x.split('='); if (k[0]) QP[k[0]] = decodeURIComponent(k[1] || ''); });
+  var S = { code: '', step: 1, in: /^\d{4}-\d\d-\d\d$/.test(QP.in || '') && QP.in >= today ? QP.in : today, out: '', rooms: [newRoom()], av: null, pick: [], busy: false, err: '', guest: { name: '', phone: '', email: '', nationality: 'Indian' }, done: null, snap: null };
+
+  S.out = /^\d{4}-\d\d-\d\d$/.test(QP.out || '') && QP.out > S.in ? QP.out : addDays(S.in, 1);
 
   function api(path, opt) {
     return fetch(API + path, opt).then(function (r) { return r.json().then(function (j) { j._status = r.status; return j; }); });
@@ -120,7 +124,7 @@
   // price of one room: the server prices each room by number of adults (children aged 4 and under are free)
   function roomPrice(type, r) {
     var t = typeInfo(type), p = t.byAdults && t.byAdults[occ(r).a];
-    return p ? { total: p.total, perNight: p.perNight } : { total: t.total, perNight: t.perNight };
+    return p ? { total: p.total, perNight: p.perNight, was: p.wasTotal || p.total, promo: p.promo || '', incl: p.incl || [] } : { total: t.total, perNight: t.perNight, was: t.total, promo: '', incl: [] };
   }
   function usedOf(type, except) {
     var n = 0;
@@ -140,6 +144,7 @@
   function readDates() {
     var a = $('#hin'), b = $('#hout');
     if (a && b) { S.in = a.value; S.out = b.value; }
+    var c = $('#hcode'); if (c) S.code = c.value.trim();
   }
 
   /* ---------- views ---------- */
@@ -173,7 +178,8 @@
     var h = '<div class="box"><h3>Check availability</h3><div class="g">' +
       '<label>Check-in<input type="date" id="hin" min="' + today + '" value="' + S.in + '"></label>' +
       '<label>Check-out<input type="date" id="hout" min="' + addDays(S.in, 1) + '" value="' + S.out + '"></label>' +
-      '<label>Rooms<select id="hrooms">' + opts(1, MAX_ROOMS, S.rooms.length) + '</select></label></div>' +
+      '<label>Rooms<select id="hrooms">' + opts(1, MAX_ROOMS, S.rooms.length) + '</select></label>' +
+      '<label>Coupon code (optional)<input id="hcode" autocomplete="off" value="' + esc(S.code) + '"></label></div>' +
       S.rooms.map(roomForm).join('') +
       '<div class="bar"><div class="mut">' + plural(people().adults, 'adult') + (people().kids ? ', ' + plural(people().kids, 'child') : '') + ' in ' + plural(S.rooms.length, 'room') + '</div>' +
       '<button class="p" id="hcheck"' + (S.busy ? ' disabled' : '') + '>' + (S.busy && !S.av ? 'Checking...' : 'Check availability') + '</button></div>' +
@@ -194,14 +200,14 @@
         if (ok && left > 0) any = true;
         var p = ok ? roomPrice(t.type, r) : null, inf = INFO[t.type] || {};
         h += '<label class="opt' + (sel ? ' sel' : '') + (disabled ? ' dis' : '') + '"><input type="radio" name="rp' + i + '" data-r="' + i + '" data-t="' + esc(t.type) + '"' + (sel ? ' checked' : '') + (disabled ? ' disabled' : '') + '>' +
-          '<span class="rt"><b>' + esc(title(t.type)) + '</b>' + (inf.desc ? '<small>' + esc(inf.desc) + '</small>' : '') +
-          (!ok ? '<small>Not suitable for this group. ' + esc(ruleFor(t.type).msg) + '</small>' : t.free === 0 ? '<small class="low">Sold out</small>' : (t.free <= 3 ? '<small class="low">Only ' + t.free + ' left</small>' : '')) + '</span>' +
-          (p ? '<span class="pr"><b>' + money(p.total) + '</b><small>' + money(p.perNight) + ' a night + ' + (S.av.taxPct || 0) + '% GST</small></span>' : '') + '</label>';
+          '<span class="rt"><b>' + esc(title(t.type)) + '</b>' + (inf.desc ? '<small>' + esc(inf.desc) + '</small>' : '') + (p && p.incl.length ? '<small class="promo">Includes: ' + esc(p.incl.join(', ')) + '</small>' : '') +
+          (!ok ? '<small>Not suitable for this group. ' + esc(ruleFor(t.type).msg) + '</small>' : t.free === 0 ? '<small class="low">' + esc(t.reason || 'Sold out') + '</small>' : (t.free <= 3 ? '<small class="low">Only ' + t.free + ' left</small>' : '')) + '</span>' +
+          (p ? '<span class="pr">' + (p.was > p.total ? '<small class="was">' + money(p.was) + '</small>' : '') + '<b>' + money(p.total) + '</b>' + (p.promo ? '<small class="promo">' + esc(p.promo) + '</small>' : '') + '<small>' + money(p.perNight) + ' a night + ' + (S.av.taxPct || 0) + '% GST</small></span>' : '') + '</label>';
       });
       if (!any) h += '<p class="mut">No room type is available for this group. Try adding another room or changing dates, or call the hotel.</p>';
       h += '</div>';
     });
-    h += '<p class="err" role="alert">' + esc(S.err) + '</p>' +
+    h += (S.av.codeOk === false ? '<p class="err">That coupon code is not valid for these dates.</p>' : S.av.codeOk ? '<p class="mut">Coupon applied.</p>' : '') + '<p class="err" role="alert">' + esc(S.err) + '</p>' +
       '<div class="bar"><div><b>' + plural(T.rooms, 'room') + ' selected</b>' + (T.rooms ? ', total ' + money(T.total) + ' including GST' : '') + '<div class="mut">Pay at the hotel. No card needed.</div></div>' +
       '<button class="p" id="hnext"' + (allPicked ? '' : ' disabled') + '>Continue</button></div></div>';
     return h;
@@ -252,7 +258,7 @@
       }
     }
     S.busy = true; S.av = null; S.pick = []; draw();
-    api('/availability?in=' + S.in + '&out=' + S.out).then(function (j) {
+    api('/availability?in=' + S.in + '&out=' + S.out + (S.code ? '&code=' + encodeURIComponent(S.code) : '')).then(function (j) {
       S.busy = false;
       if (!j.ok) { S.err = j.error || 'Could not check availability.'; S.av = null; }
       else {
@@ -281,7 +287,7 @@
     var rooms = Object.keys(counts).map(function (k) { return { type: k, qty: counts[k] }; });
     var P = people();
     var snap = S.rooms.map(function (r, i) { return { title: title(S.pick[i]), occ: occLabel(r) }; });
-    api('/book', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ in: S.in, out: S.out, guests: P.all, adults: P.adults, children: P.kids, rooms: rooms, occupancy: occupancy, guest: g, hp: ($('#ghp') || {}).value || '' }) })
+    api('/book', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ in: S.in, out: S.out, guests: P.all, adults: P.adults, children: P.kids, rooms: rooms, occupancy: occupancy, code: S.code, quoted: totals().total, guest: g, hp: ($('#ghp') || {}).value || '' }) })
       .then(function (j) {
         S.busy = false;
         if (j.ok) { S.done = j; S.snap = snap; draw(); mount.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
@@ -342,4 +348,5 @@
   }
 
   draw();
+  if (QP.in && QP.out) check();
 })();
