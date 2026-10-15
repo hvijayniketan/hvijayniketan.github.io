@@ -1,8 +1,0 @@
-const n=document.getElementById('mainNav');addEventListener('scroll',()=>n.classList.toggle('scrolled',scrollY>60));
-const b=document.getElementById('burger'),m=document.getElementById('mmenu');b.onclick=()=>m.classList.toggle('open');
-const T=document.querySelectorAll('.theme-dot');function setT(t){document.body.className=t;T.forEach(d=>d.classList.toggle('active',d.dataset.theme===t));try{localStorage.setItem('hv-theme',t)}catch(e){}}
-T.forEach(d=>d.onclick=()=>setT(d.dataset.theme));try{const s=localStorage.getItem('hv-theme');if(s)setT(s)}catch(e){}
-const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.style.opacity=1;e.target.style.transform='none'}}),{threshold:.08});
-document.querySelectorAll('.acard,.pk,.amenity-item,.review-card,.room-card').forEach(e=>{e.style.cssText+='opacity:0;transform:translateY(24px);transition:opacity .5s,transform .5s';io.observe(e)});
-(function(){var el=document.querySelectorAll('.hv-price');if(!el.length)return;var f=function(n){var x=new Date(Date.now()+n*864e5);return x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0')};
-fetch('https://hotelvijay-booking.vijayniketan5.workers.dev/api/availability?in='+f(0)+'&out='+f(1)).then(function(r){return r.json()}).then(function(j){if(!j.ok)throw 0;el.forEach(function(e){var t=(j.types||[]).filter(function(x){return x.type===e.dataset.hv})[0];if(!t)return;var v=[];if(t.byAdults)for(var k in t.byAdults)v.push(t.byAdults[k].perNight);if(!v.length&&t.perNight)v.push(t.perNight);if(!v.length)return;e.textContent=(v.length>1?'from ':'')+'\u20b9'+Math.round(Math.min.apply(null,v)).toLocaleString('en-IN')})}).catch(function(e){console.error('HV price fetch failed',e)})})();
