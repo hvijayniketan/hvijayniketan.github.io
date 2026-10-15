@@ -208,7 +208,7 @@
       h += '</div>';
     });
     h += (S.av.codeOk === false ? '<p class="err">That coupon code is not valid for these dates.</p>' : S.av.codeOk ? '<p class="mut">Coupon applied.</p>' : '') + '<p class="err" role="alert">' + esc(S.err) + '</p>' +
-      '<div class="bar"><div><b>' + plural(T.rooms, 'room') + ' selected</b>' + (T.rooms ? ', total ' + money(T.total) + ' including GST' : '') + '<div class="mut">Pay at the hotel. No card needed.</div></div>' +
+      '<div class="bar"><div><b>' + plural(T.rooms, 'room') + ' selected</b>' + (T.rooms ? ', total ' + money(T.total) + ' including GST' : '') + '<div class="mut">' + (S.av && S.av.payOnline ? 'Pay securely online with Razorpay (UPI, cards, net banking).' : 'Pay at the hotel. No card needed.') + '</div></div>' +
       '<button class="p" id="hnext"' + (allPicked ? '' : ' disabled') + '>Continue</button></div></div>';
     return h;
   }
@@ -222,14 +222,14 @@
   function viewGuest() {
     var T = totals(), g = S.guest;
     return '<div class="box"><h3>Your details</h3>' + summaryHtml() +
-      '<p class="mut">Total ' + money(T.total) + ' including GST, payable at the hotel.</p>' +
+      '<p class="mut">Total ' + money(T.total) + ' including GST, ' + (S.av && S.av.payOnline ? 'paid online now through Razorpay.' : 'payable at the hotel.') + '</p>' +
       '<div class="g" style="margin-top:12px"><label>Full name<input id="gn" autocomplete="name" value="' + esc(g.name) + '"></label>' +
       '<label>Mobile number<input id="gp" type="tel" autocomplete="tel" inputmode="tel" value="' + esc(g.phone) + '"></label>' +
       '<label>Email, optional<input id="ge" type="email" autocomplete="email" value="' + esc(g.email) + '"></label>' +
       '<label>Nationality<input id="gt" value="' + esc(g.nationality) + '"></label></div>' +
       '<div class="hp" aria-hidden="true"><label>Website<input id="ghp" tabindex="-1" autocomplete="off"></label></div>' +
       '<p class="mut">Check-in after 10:00 AM. Please carry a valid photo ID for every adult and for children aged ' + ADULT_FROM_AGE + ' and above.</p><p class="err" role="alert">' + esc(S.err) + '</p>' +
-      '<div class="bar"><button id="hback">Back</button><button class="p" id="hconfirm"' + (S.busy ? ' disabled' : '') + '>' + (S.busy ? 'Booking...' : 'Confirm booking') + '</button></div></div>';
+      '<div class="bar"><button id="hback">Back</button><button class="p" id="hconfirm"' + (S.busy ? ' disabled' : '') + '>' + (S.busy ? (S.msg || 'Please wait...') : (S.av && S.av.payOnline ? 'Pay ' + money(totals().total) + ' and confirm' : 'Confirm booking')) + '</button></div></div>';
   }
 
   function viewDone() {
@@ -238,7 +238,7 @@
     return '<div class="box ok"><h3>Booking confirmed</h3><p>Thank you, ' + esc(d.name) + '. Your booking number is <b>' + esc(d.ref) + '</b>. Please keep it for check-in.</p>' +
       '<table>' + sn.map(function (x, i) { return '<tr><td>Room ' + (i + 1) + '</td><td>' + esc(x.title) + '<br><span class="mut">' + esc(x.occ) + '</span></td></tr>'; }).join('') +
       '<tr><td>Check-in</td><td>' + fmtD(d.in) + ' (after 10:00 AM)</td></tr><tr><td>Check-out</td><td>' + fmtD(d.out) + '</td></tr>' +
-      (d.total ? '<tr><td>Total including GST</td><td>' + money(d.total) + '</td></tr><tr><td>Payment</td><td>At the hotel</td></tr>' : '') + '</table>' +
+      (d.total ? '<tr><td>Total including GST</td><td>' + money(d.total) + '</td></tr><tr><td>Payment</td><td>' + (d.paid ? 'Paid online, ' + money(d.paid) : 'At the hotel') + '</td></tr>' : '') + '</table>' +
       '<p class="mut">Your room number is given at check-in. Carry a valid photo ID.</p>' +
       '<div class="bar">' + (WA ? '<a class="btn" target="_blank" rel="noopener" href="https://wa.me/' + WA + '?text=' + encodeURIComponent(msg) + '">Message the hotel on WhatsApp</a>' : '') + '<button id="hnew">Make another booking</button></div></div>';
   }
@@ -272,6 +272,35 @@
     }).catch(function () { S.busy = false; S.err = 'No connection. Please try again or call the hotel.'; draw(); });
   }
 
+  function loadRzp(cb, fail) {
+    if (window.Razorpay) return cb();
+    var sc = document.createElement('script'); sc.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    sc.onload = cb; sc.onerror = fail; document.head.appendChild(sc);
+  }
+  // Razorpay window. Nothing is booked until the payment is made and confirmed by the server.
+  function pay(o, snap) {
+    var stop = function (m) { S.busy = false; S.msg = ''; S.err = m; draw(); };
+    loadRzp(function () {
+      var rz = new window.Razorpay({
+        key: o.keyId, amount: o.amount, currency: o.currency, name: o.name, description: o.description, order_id: o.orderId, prefill: o.prefill,
+        theme: { color: '#b8903a' },
+        handler: function (r) {
+          S.msg = 'Confirming your booking...'; draw();
+          api('/pay/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orderId: r.razorpay_order_id, paymentId: r.razorpay_payment_id, signature: r.razorpay_signature }) })
+            .then(function (j) {
+              S.busy = false; S.msg = '';
+              if (j.ok) { S.done = j; S.snap = snap; draw(); mount.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+              S.err = j.error || 'We could not confirm your booking. Please call the hotel. Do not pay again.';
+              if (j.soldOut) { var m = S.err; S.step = 1; check(); S.err = m; } else draw();
+            }).catch(function () { stop('Payment received, but we lost the connection. Please call the hotel to confirm your booking. Do not pay again.'); });
+        },
+        modal: { ondismiss: function () { if (!S.done && S.msg === 'Waiting for payment...') stop('Payment was not completed. No booking was made.'); } },
+      });
+      rz.on('payment.failed', function (e) { S.msg = 'Waiting for payment...'; S.err = (e && e.error && e.error.description) || 'Payment failed. Please try again.'; });
+      rz.open();
+    }, function () { stop('Could not open the payment window. Check your internet and try again.'); });
+  }
+
   function confirm() {
     var g = S.guest;
     g.name = $('#gn').value.trim(); g.phone = $('#gp').value.trim(); g.email = $('#ge').value.trim(); g.nationality = $('#gt').value.trim() || 'Indian';
@@ -290,6 +319,7 @@
     api('/book', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ in: S.in, out: S.out, guests: P.all, adults: P.adults, children: P.kids, rooms: rooms, occupancy: occupancy, code: S.code, quoted: totals().total, guest: g, hp: ($('#ghp') || {}).value || '' }) })
       .then(function (j) {
         S.busy = false;
+        if (j.ok && j.pay) { S.busy = true; S.msg = 'Waiting for payment...'; draw(); return pay(j.pay, snap); }
         if (j.ok) { S.done = j; S.snap = snap; draw(); mount.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
         S.err = j.error || 'Could not complete the booking.';
         if (j.soldOut) { var m = S.err; S.step = 1; check(); S.err = m; } else draw();
