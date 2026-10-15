@@ -2,7 +2,7 @@
  * Hotel Vijay booking widget (v2: adults / children / child ages, per-room occupancy rules).
  * Add to any page:
  *   <div id="hv-booking"></div>
- *   <script src="booking-widget.js" data-api="https://YOUR-SITE.netlify.app/api" data-whatsapp="919835620220"></script>
+ *   <script src="booking-widget.js" data-api="https://hotelvijay-booking.vijayniketan5.workers.dev/api" data-whatsapp="919835620220"></script>
  * Optional attributes:
  *   data-accent, data-text, data-on, data-dark
  *   data-rooms='{"AC Standard":{"title":"AC Room","desc":"..."}}'
@@ -11,7 +11,10 @@
 (function () {
   'use strict';
   var script = document.currentScript;
+  var DEFAULT_API = 'https://hotelvijay-booking.vijayniketan5.workers.dev/api';
   var API = (script.getAttribute('data-api') || '').replace(/\/+$/, '');
+  // Netlify was shut down: ignore any old netlify.app address and use the Cloudflare Worker.
+  if (!API || /netlify/i.test(API)) API = DEFAULT_API;
   var WA = (script.getAttribute('data-whatsapp') || '').replace(/\D/g, '');
   var ACCENT = script.getAttribute('data-accent') || '#0e7a8c';
   var TEXT = script.getAttribute('data-text') || '';
