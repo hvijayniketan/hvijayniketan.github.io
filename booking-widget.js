@@ -1,5 +1,5 @@
 /*
- * Hotel Vijay booking widget (v5: prices from PMS Rates, Inventory and Promotions; adults / children / child ages, per-room occupancy rules; booking slip link on confirmation).
+ * Hotel Vijay booking widget (v7: prices from PMS Rates, Inventory and Promotions; adults / children / child ages, per-room occupancy rules; booking slip link on confirmation; policy agreement before payment).
  * Add to any page:
  *   <div id="hv-booking"></div>
  *   <script src="booking-widget.js" data-api="https://hotelvijay-booking.vijayniketan5.workers.dev/api" data-whatsapp="919835620220"></script>
@@ -88,6 +88,7 @@
 .hvb .sum{border:1px solid rgba(127,127,127,.3);border-radius:10px;padding:12px 14px;margin:10px 0;background:rgba(127,127,127,.05)}\
 .hvb .sum div{padding:3px 0}\
 .hvb .was{text-decoration:line-through;opacity:.6}.hvb .promo{color:var(--a);font-weight:600;opacity:1!important}\
+.hvb .ph{width:130px;height:92px;object-fit:cover;border-radius:8px;flex:0 0 auto}.hvb .am{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.hvb .am i{font-style:normal;font-size:.75em;border:1px solid rgba(127,127,127,.35);border-radius:20px;padding:2px 9px}.hvb .pl{border:1px solid rgba(127,127,127,.3);border-radius:10px;padding:12px 14px;margin-top:14px;font-size:.88em;background:rgba(127,127,127,.05)}.hvb .pl b{display:block;margin-bottom:4px}@media(max-width:560px){.hvb .opt{flex-wrap:wrap}.hvb .ph{width:100%;height:150px}}\
 ' + (DARK ? '.hvb input,.hvb select{color-scheme:dark}' : '') + '\
 ';
   var st = document.createElement('style');
@@ -112,7 +113,7 @@
 
   var today = ymd(new Date());
   var QP = {}; (location.search || '').replace(/^\?/, '').split('&').forEach(function (x) { var k = x.split('='); if (k[0]) QP[k[0]] = decodeURIComponent(k[1] || ''); });
-  var S = { code: '', step: 1, in: /^\d{4}-\d\d-\d\d$/.test(QP.in || '') && QP.in >= today ? QP.in : today, out: '', rooms: [newRoom()], av: null, pick: [], busy: false, err: '', guest: { name: '', phone: '', email: '', nationality: 'Indian' }, done: null, snap: null };
+  var S = { code: '', step: 1, in: /^\d{4}-\d\d-\d\d$/.test(QP.in || '') && QP.in >= today ? QP.in : today, out: '', rooms: [newRoom()], av: null, pick: [], busy: false, err: '', guest: { name: '', phone: '', email: '', nationality: 'Indian' }, agree: false, done: null, snap: null };
 
   S.out = /^\d{4}-\d\d-\d\d$/.test(QP.out || '') && QP.out > S.in ? QP.out : addDays(S.in, 1);
 
@@ -151,6 +152,7 @@
   function view() {
     if (S.done) return viewDone();
     if (S.step === 3) return viewGuest();
+    if (S.step === 2 && S.av) return viewResults();
     return viewSearch();
   }
 
@@ -175,16 +177,15 @@
   }
 
   function viewSearch() {
-    var h = '<div class="box"><h3>Check availability</h3><div class="g">' +
+    var h = '<div class="box"><h3>Select dates and guests</h3><div class="g">' +
       '<label>Check-in<input type="date" id="hin" min="' + today + '" value="' + S.in + '"></label>' +
       '<label>Check-out<input type="date" id="hout" min="' + addDays(S.in, 1) + '" value="' + S.out + '"></label>' +
       '<label>Rooms<select id="hrooms">' + opts(1, MAX_ROOMS, S.rooms.length) + '</select></label>' +
       '<label>Coupon code (optional)<input id="hcode" autocomplete="off" value="' + esc(S.code) + '"></label></div>' +
       S.rooms.map(roomForm).join('') +
       '<div class="bar"><div class="mut">' + plural(people().adults, 'adult') + (people().kids ? ', ' + plural(people().kids, 'child') : '') + ' in ' + plural(S.rooms.length, 'room') + '</div>' +
-      '<button class="p" id="hcheck"' + (S.busy ? ' disabled' : '') + '>' + (S.busy && !S.av ? 'Checking...' : 'Check availability') + '</button></div>' +
+      '<button class="p" id="hcheck"' + (S.busy ? ' disabled' : '') + '>' + (S.busy && !S.av ? 'Checking...' : 'Next') + '</button></div>' +
       '<p class="err" role="alert">' + (S.av ? '' : esc(S.err)) + '</p></div>';
-    if (S.av) h += viewResults();
     return h;
   }
 
@@ -200,7 +201,8 @@
         if (ok && left > 0) any = true;
         var p = ok ? roomPrice(t.type, r) : null, inf = INFO[t.type] || {};
         h += '<label class="opt' + (sel ? ' sel' : '') + (disabled ? ' dis' : '') + '"><input type="radio" name="rp' + i + '" data-r="' + i + '" data-t="' + esc(t.type) + '"' + (sel ? ' checked' : '') + (disabled ? ' disabled' : '') + '>' +
-          '<span class="rt"><b>' + esc(title(t.type)) + '</b>' + (inf.desc ? '<small>' + esc(inf.desc) + '</small>' : '') + (p && p.incl.length ? '<small class="promo">Includes: ' + esc(p.incl.join(', ')) + '</small>' : '') +
+          (inf.img ? '<img class="ph" loading="lazy" alt="' + esc(title(t.type)) + '" src="' + esc(inf.img) + '">' : '') +
+          '<span class="rt"><b>' + esc(title(t.type)) + '</b>' + (inf.desc ? '<small>' + esc(inf.desc) + '</small>' : '') + (inf.am && inf.am.length ? '<span class="am">' + inf.am.map(function (a) { return '<i>' + esc(a) + '</i>'; }).join('') + '</span>' : '') + (p && p.incl.length ? '<small class="promo">Includes: ' + esc(p.incl.join(', ')) + '</small>' : '') +
           (!ok ? '<small>Not suitable for this group. ' + esc(ruleFor(t.type).msg) + '</small>' : t.free === 0 ? '<small class="low">' + esc(t.reason || 'Sold out') + '</small>' : (t.free <= 3 ? '<small class="low">Only ' + t.free + ' left</small>' : '')) + '</span>' +
           (p ? '<span class="pr">' + (p.was > p.total ? '<small class="was">' + money(p.was) + '</small>' : '') + '<b>' + money(p.total) + '</b>' + (p.promo ? '<small class="promo">' + esc(p.promo) + '</small>' : '') + '<small>' + money(p.perNight) + ' a night + ' + (S.av.taxPct || 0) + '% GST</small></span>' : '') + '</label>';
       });
@@ -208,8 +210,9 @@
       h += '</div>';
     });
     h += (S.av.codeOk === false ? '<p class="err">That coupon code is not valid for these dates.</p>' : S.av.codeOk ? '<p class="mut">Coupon applied.</p>' : '') + '<p class="err" role="alert">' + esc(S.err) + '</p>' +
+      '<div class="pl"><b>Policies</b>Check-in after 10:00 AM, check-out by 9:00 AM. Cancellation: 72+ hours before check-in 100% refund, 48 to 72 hours 50% refund, under 48 hours or no-show no refund. Refunds go to the original payment method in 5 to 7 working days. Bihar is a dry state: liquor and intoxicants are not allowed. <a href="index.html#policies" target="_blank" rel="noopener" style="color:inherit">Read full policies</a></div>' +
       '<div class="bar"><div><b>' + plural(T.rooms, 'room') + ' selected</b>' + (T.rooms ? ', total ' + money(T.total) + ' including GST' : '') + '<div class="mut">' + (S.av && S.av.payOnline ? 'Pay securely online with Razorpay (UPI, cards, net banking).' : 'Pay at the hotel. No card needed.') + '</div></div>' +
-      '<button class="p" id="hnext"' + (allPicked ? '' : ' disabled') + '>Continue</button></div></div>';
+      '<span><button id="hback2">Back</button> <button class="p" id="hnext"' + (allPicked ? '' : ' disabled') + '>Continue</button></span></div></div>';
     return h;
   }
 
@@ -225,10 +228,12 @@
       '<p class="mut">Total ' + money(T.total) + ' including GST, ' + (S.av && S.av.payOnline ? 'paid online now through Razorpay.' : 'payable at the hotel.') + '</p>' +
       '<div class="g" style="margin-top:12px"><label>Full name<input id="gn" autocomplete="name" value="' + esc(g.name) + '"></label>' +
       '<label>Mobile number<input id="gp" type="tel" autocomplete="tel" inputmode="tel" value="' + esc(g.phone) + '"></label>' +
-      '<label>Email, optional<input id="ge" type="email" autocomplete="email" value="' + esc(g.email) + '"></label>' +
+      '<label>Email, optional (for your booking slip)<input id="ge" type="email" autocomplete="email" value="' + esc(g.email) + '"></label>' +
       '<label>Nationality<input id="gt" value="' + esc(g.nationality) + '"></label></div>' +
       '<div class="hp" aria-hidden="true"><label>Website<input id="ghp" tabindex="-1" autocomplete="off"></label></div>' +
-      '<p class="mut">Check-in after 10:00 AM. Please carry a valid photo ID for every adult and for children aged ' + ADULT_FROM_AGE + ' and above.</p><p class="err" role="alert">' + esc(S.err) + '</p>' +
+      '<p class="mut">Check-in after 10:00 AM, check-out by 9:00 AM. Please carry a valid photo ID for every adult and for children aged ' + ADULT_FROM_AGE + ' and above. Bihar is a dry state: liquor and intoxicants are not allowed in the hotel.</p>' +
+      '<label class="opt' + (S.agree ? ' sel' : '') + '" style="align-items:flex-start"><input type="checkbox" id="gag"' + (S.agree ? ' checked' : '') + ' style="width:auto;min-height:0;margin-top:4px;accent-color:var(--a)"><span>I agree to the <a href="index.html#cancellation-policy" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">cancellation and refund policy</a>, the <a href="index.html#liquor-policy" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">liquor policy</a> and the <a href="index.html#policies" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">house rules</a>.</span></label>' +
+      '<p class="err" role="alert">' + esc(S.err) + '</p>' +
       '<div class="bar"><button id="hback">Back</button><button class="p" id="hconfirm"' + (S.busy ? ' disabled' : '') + '>' + (S.busy ? (S.msg || 'Please wait...') : (S.av && S.av.payOnline ? 'Pay ' + money(totals().total) + ' and confirm' : 'Confirm booking')) + '</button></div></div>';
   }
 
@@ -263,7 +268,7 @@
       S.busy = false;
       if (!j.ok) { S.err = j.error || 'Could not check availability.'; S.av = null; }
       else {
-        S.av = j;
+        S.av = j; S.step = 2;
         S.pick = S.rooms.map(function (r) {
           var good = j.types.filter(function (t) { return t.free > 0 && fits(t.type, r); });
           return good.length === 1 ? good[0].type : '';
@@ -305,8 +310,10 @@
   function confirm() {
     var g = S.guest;
     g.name = $('#gn').value.trim(); g.phone = $('#gp').value.trim(); g.email = $('#ge').value.trim(); g.nationality = $('#gt').value.trim() || 'Indian';
+    S.agree = !!($('#gag') && $('#gag').checked);
     if (g.name.length < 2) { S.err = 'Enter your name.'; draw(); return; }
     if (g.phone.replace(/\D/g, '').length < 10) { S.err = 'Enter a valid mobile number.'; draw(); return; }
+    if (!S.agree) { S.err = 'Please tick the box to accept the cancellation policy and hotel rules.'; draw(); return; }
     S.err = ''; S.busy = true; draw();
     var counts = {}, occupancy = [];
     S.rooms.forEach(function (r, i) {
@@ -373,7 +380,8 @@
       }
       S.err = ''; S.step = 3; draw();
     };
-    if ((el = $('#hback'))) el.onclick = function () { S.step = 1; S.err = ''; draw(); };
+    if ((el = $('#hback2'))) el.onclick = function () { S.step = 1; S.err = ''; draw(); };
+    if ((el = $('#hback'))) el.onclick = function () { S.step = S.av ? 2 : 1; S.err = ''; draw(); };
     if ((el = $('#hconfirm'))) el.onclick = confirm;
     if ((el = $('#hnew'))) el.onclick = function () { S.done = null; S.step = 1; S.rooms = [newRoom()]; resetResults(); draw(); };
   }
