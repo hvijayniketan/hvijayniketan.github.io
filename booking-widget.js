@@ -240,6 +240,7 @@
       '<tr><td>Check-in</td><td>' + fmtD(d.in) + ' (after 10:00 AM)</td></tr><tr><td>Check-out</td><td>' + fmtD(d.out) + '</td></tr>' +
       (d.total ? '<tr><td>Total including GST</td><td>' + money(d.total) + '</td></tr><tr><td>Payment</td><td>' + (d.paid ? 'Paid online, ' + money(d.paid) : 'At the hotel') + '</td></tr>' : '') + '</table>' +
       '<p class="mut">Your room number is given at check-in. Carry a valid photo ID.</p>' +
+            (d.slipUrl ? '<p class="mut">Please save your booking slip now. Open it and choose Download / Print as PDF.</p><div class="bar"><a class="btn" target="_blank" rel="noopener" href="' + esc(d.slipUrl) + '">Download booking slip (PDF)</a><a class="btn" target="_blank" rel="noopener" href="https://wa.me/?text=' + encodeURIComponent('My booking slip ' + d.ref + ': ' + d.slipUrl) + '">Share slip on WhatsApp</a></div>' : '') +
       '<div class="bar">' + (WA ? '<a class="btn" target="_blank" rel="noopener" href="https://wa.me/' + WA + '?text=' + encodeURIComponent(msg) + '">Message the hotel on WhatsApp</a>' : '') + '<button id="hnew">Make another booking</button></div></div>';
   }
 
