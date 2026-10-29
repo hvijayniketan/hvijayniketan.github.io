@@ -1,5 +1,5 @@
 /*
- * Hotel Vijay booking widget (v7: prices from PMS Rates, Inventory and Promotions; adults / children / child ages, per-room occupancy rules; booking slip link on confirmation; policy agreement before payment).
+ * Hotel Vijay booking widget (v8: Already booked? find your booking and cancel; v7: prices from PMS Rates, Inventory and Promotions; adults / children / child ages, per-room occupancy rules; booking slip link on confirmation; policy agreement before payment).
  * Add to any page:
  *   <div id="hv-booking"></div>
  *   <script src="booking-widget.js" data-api="https://hotelvijay-booking.vijayniketan5.workers.dev/api" data-whatsapp="919835620220"></script>
@@ -176,6 +176,13 @@
     return h + '</div>';
   }
 
+  function manageBox() {
+    return '<div class="box" style="margin-top:14px"><h3>Already booked? Cancel or download your booking slip</h3><div class="g">' +
+      '<label>Booking number<input id="mref" autocomplete="off" placeholder="Example: R1001" value="' + esc(S.mref || '') + '"></label>' +
+      '<label>Mobile number used for the booking<input id="mph" type="tel" inputmode="tel" autocomplete="tel" value="' + esc(S.mph || '') + '"></label></div>' +
+      '<div class="bar"><div class="mut">You can open your slip again, print it, or cancel from there.</div><button id="mfind">Open my booking</button></div><p class="err" id="mmsg" role="alert"></p></div>';
+  }
+
   function viewSearch() {
     var h = '<div class="box"><h3>Select dates and guests</h3><div class="g">' +
       '<label>Check-in<input type="date" id="hin" min="' + today + '" value="' + S.in + '"></label>' +
@@ -185,7 +192,7 @@
       S.rooms.map(roomForm).join('') +
       '<div class="bar"><div class="mut">' + plural(people().adults, 'adult') + (people().kids ? ', ' + plural(people().kids, 'child') : '') + ' in ' + plural(S.rooms.length, 'room') + '</div>' +
       '<button class="p" id="hcheck"' + (S.busy ? ' disabled' : '') + '>' + (S.busy && !S.av ? 'Checking...' : 'Next') + '</button></div>' +
-      '<p class="err" role="alert">' + (S.av ? '' : esc(S.err)) + '</p></div>';
+      '<p class="err" role="alert">' + (S.av ? '' : esc(S.err)) + '</p></div>' + manageBox();
     return h;
   }
 
@@ -228,7 +235,7 @@
       '<p class="mut">Total ' + money(T.total) + ' including GST, ' + (S.av && S.av.payOnline ? 'paid online now through Razorpay.' : 'payable at the hotel.') + '</p>' +
       '<div class="g" style="margin-top:12px"><label>Full name<input id="gn" autocomplete="name" value="' + esc(g.name) + '"></label>' +
       '<label>Mobile number<input id="gp" type="tel" autocomplete="tel" inputmode="tel" value="' + esc(g.phone) + '"></label>' +
-      '<label>Email, optional (for your booking slip)<input id="ge" type="email" autocomplete="email" value="' + esc(g.email) + '"></label>' +
+      '<label>Email, recommended (your booking slip is sent here)<input id="ge" type="email" autocomplete="email" value="' + esc(g.email) + '"></label>' +
       '<label>Nationality<input id="gt" value="' + esc(g.nationality) + '"></label></div>' +
       '<div class="hp" aria-hidden="true"><label>Website<input id="ghp" tabindex="-1" autocomplete="off"></label></div>' +
       '<p class="mut">Check-in after 10:00 AM, check-out by 9:00 AM. Please carry a valid photo ID for every adult and for children aged ' + ADULT_FROM_AGE + ' and above. Bihar is a dry state: liquor and intoxicants are not allowed in the hotel.</p>' +
@@ -246,6 +253,7 @@
       (d.total ? '<tr><td>Total including GST</td><td>' + money(d.total) + '</td></tr><tr><td>Payment</td><td>' + (d.paid ? 'Paid online, ' + money(d.paid) : 'At the hotel') + '</td></tr>' : '') + '</table>' +
       '<p class="mut">Your room number is given at check-in. Carry a valid photo ID.</p>' +
       (d.slipUrl ? '<p class="mut">Please save your booking slip now. Open it and choose Download / Print as PDF.</p><div class="bar"><a class="btn" target="_blank" rel="noopener" href="' + esc(d.slipUrl) + '">Download booking slip (PDF)</a><a class="btn" target="_blank" rel="noopener" href="https://wa.me/?text=' + encodeURIComponent('My booking slip ' + d.ref + ': ' + d.slipUrl) + '">Share slip on WhatsApp</a></div>' : '') +
+      '<p class="mut">Lost your slip? Come back to this page and use "Already booked?" with your booking number and mobile number to open it again, or to cancel.</p>' +
       '<div class="bar">' + (WA ? '<a class="btn" target="_blank" rel="noopener" href="https://wa.me/' + WA + '?text=' + encodeURIComponent(msg) + '">Message the hotel on WhatsApp</a>' : '') + '<button id="hnew">Make another booking</button></div></div>';
   }
 
@@ -276,6 +284,17 @@
       }
       draw();
     }).catch(function () { S.busy = false; S.err = 'No connection. Please try again or call the hotel.'; draw(); });
+  }
+
+  function manage() {
+    var ref = ($('#mref').value || '').trim(), ph = ($('#mph').value || '').trim(), m = $('#mmsg');
+    S.mref = ref; S.mph = ph;
+    if (!ref || ph.replace(/\D/g, '').length < 10) { m.textContent = 'Enter your booking number and the 10 digit mobile number.'; return; }
+    m.textContent = 'Looking for your booking...';
+    api('/lookup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ref: ref, phone: ph }) }).then(function (j) {
+      if (j.ok && j.slipUrl) { window.location.href = j.slipUrl; return; }
+      m.textContent = j.error || 'We could not find the booking. Please call the hotel.';
+    }).catch(function () { m.textContent = 'No connection. Please try again or call the hotel.'; });
   }
 
   function loadRzp(cb, fail) {
@@ -337,6 +356,7 @@
   function bind() {
     var el;
     if ((el = $('#hcheck'))) el.onclick = check;
+    if ((el = $('#mfind'))) el.onclick = manage;
     if ((el = $('#hin'))) el.onchange = function () { var v = this.value; if (v && $('#hout').value <= v) $('#hout').value = addDays(v, 1); $('#hout').min = addDays(v, 1); readDates(); resetResults(); draw(); };
     if ((el = $('#hout'))) el.onchange = function () { readDates(); resetResults(); draw(); };
     if ((el = $('#hrooms'))) el.onchange = function () {
