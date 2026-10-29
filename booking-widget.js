@@ -177,14 +177,14 @@
   }
 
   function manageBox() {
-    return '<div class="box" style="margin-top:14px"><h3>Already booked? Cancel or download your booking slip</h3><div class="g">' +
+    return '<div class="box" id="hv-manage" style="margin-top:14px"><h3>Already booked? Cancel or download your booking slip</h3><div class="g">' +
       '<label>Booking number<input id="mref" autocomplete="off" placeholder="Example: R1001" value="' + esc(S.mref || '') + '"></label>' +
       '<label>Mobile number used for the booking<input id="mph" type="tel" inputmode="tel" autocomplete="tel" value="' + esc(S.mph || '') + '"></label></div>' +
       '<div class="bar"><div class="mut">You can open your slip again, print it, or cancel from there.</div><button id="mfind">Open my booking</button></div><p class="err" id="mmsg" role="alert"></p></div>';
   }
 
   function viewSearch() {
-    var h = '<div class="box"><h3>Select dates and guests</h3><div class="g">' +
+    var h = '<div class="box"><h3>Select dates and guests</h3><p class="mut" style="margin:-6px 0 12px">Already booked? <a href="#hv-manage" style="color:inherit;text-decoration:underline">Cancel or view your booking</a></p><div class="g">' +
       '<label>Check-in<input type="date" id="hin" min="' + today + '" value="' + S.in + '"></label>' +
       '<label>Check-out<input type="date" id="hout" min="' + addDays(S.in, 1) + '" value="' + S.out + '"></label>' +
       '<label>Rooms<select id="hrooms">' + opts(1, MAX_ROOMS, S.rooms.length) + '</select></label>' +
@@ -252,7 +252,7 @@
       '<tr><td>Check-in</td><td>' + fmtD(d.in) + ' (after 10:00 AM)</td></tr><tr><td>Check-out</td><td>' + fmtD(d.out) + '</td></tr>' +
       (d.total ? '<tr><td>Total including GST</td><td>' + money(d.total) + '</td></tr><tr><td>Payment</td><td>' + (d.paid ? 'Paid online, ' + money(d.paid) : 'At the hotel') + '</td></tr>' : '') + '</table>' +
       '<p class="mut">Your room number is given at check-in. Carry a valid photo ID.</p>' +
-      (d.slipUrl ? '<p class="mut">Please save your booking slip now. Open it and choose Download / Print as PDF.</p><div class="bar"><a class="btn" target="_blank" rel="noopener" href="' + esc(d.slipUrl) + '">Download booking slip (PDF)</a><a class="btn" target="_blank" rel="noopener" href="https://wa.me/?text=' + encodeURIComponent('My booking slip ' + d.ref + ': ' + d.slipUrl) + '">Share slip on WhatsApp</a></div>' : '') +
+      (d.slipUrl ? '<p class="mut">Open your booking slip to save it as a PDF, or to cancel this booking.</p><div class="bar"><a class="btn" target="_blank" rel="noopener" href="' + esc(d.slipUrl) + '">View, download or cancel booking</a><a class="btn" target="_blank" rel="noopener" href="https://wa.me/?text=' + encodeURIComponent('My booking slip ' + d.ref + ': ' + d.slipUrl) + '">Share slip on WhatsApp</a></div>' : '') +
       '<p class="mut">Lost your slip? Come back to this page and use "Already booked?" with your booking number and mobile number to open it again, or to cancel.</p>' +
       '<div class="bar">' + (WA ? '<a class="btn" target="_blank" rel="noopener" href="https://wa.me/' + WA + '?text=' + encodeURIComponent(msg) + '">Message the hotel on WhatsApp</a>' : '') + '<button id="hnew">Make another booking</button></div></div>';
   }
@@ -407,5 +407,6 @@
   }
 
   draw();
+  if (location.hash === '#hv-manage') { var mb = $('#hv-manage'); if (mb && mb.scrollIntoView) mb.scrollIntoView(); }
   if (QP.in && QP.out) check();
 })();
