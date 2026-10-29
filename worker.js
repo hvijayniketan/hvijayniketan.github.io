@@ -5,6 +5,11 @@
  *   POST /api/book              (with Razorpay keys: returns a payment order instead of booking)
  *   POST /api/pay/verify        (the guest's browser after paying)
  *   POST /api/razorpay-webhook  (Razorpay, set in the Razorpay dashboard)
+ *   GET  /api/slip?ref=&k=      (booking slip PDF, link is signed)
+ *   GET  /api/cancel?ref=&k=    (what a cancellation would refund)   POST /api/cancel  (cancel and refund)
+ * v4 adds: booking slip PDF, e-mail through Gmail (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN),
+ *   guest cancellation with automatic Razorpay refund. New optional settings: LINK_SECRET (long random text, set once, never
+ *   change), HOTEL_EMAIL (copy of every booking and cancellation), MAIL_FROM, SITE_URL, HOTEL_ADDRESS.
  * Settings (unchanged): SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ALLOWED_ORIGINS,
  *   RAZORPAY_KEY_ID (text), RAZORPAY_KEY_SECRET (secret), RAZORPAY_WEBHOOK_SECRET (secret). Leave out to keep pay-at-hotel.
  *   GUEST_RATES (optional, now only a fallback), WEB_PLAN, WEB_HOLDBACK (optional).
@@ -523,10 +528,12 @@ async function saveBooking(c, pay) {
   const nights = nightsBetween(c.a, c.b);
   let room = 0, tax = 0;
   c.quotes.forEach((q) => { room += q.room; tax += q.tax; });
+  const L = await links(grp || recs[0].id);
+  queue(sendConfirmation(recs, c.S.hotel, c.S.tax)); // slip e-mail to the guest and a copy to the hotel, sent after the answer
   return {
     status: 200,
     body: {
-      ok: true, ref: grp || recs[0].id, name: c.name, in: c.a, out: c.b, nights, rooms: c.totalRooms, guests: c.guests,
+      ok: true, ref: grp || recs[0].id, slipUrl: L.slipUrl, cancelUrl: L.cancelUrl, name: c.name, in: c.a, out: c.b, nights, rooms: c.totalRooms, guests: c.guests,
       lines: c.types.map((t) => ({ type: t, qty: c.want[t] })),
       room: Math.round(room), tax, total: Math.round(room + tax), taxPct: c.S.tax,
       paid: pay ? c.total : 0,
@@ -594,6 +601,307 @@ async function finalizePaid(orderId, paymentId) {
   return r;
 }
 
+/* ---------- booking slip (PDF), e-mail and guest cancellation ---------- */
+let CTX = null;  // request context, so e-mails go out after the answer has been sent
+let BASE = '';   // this Worker's address ending in /api, set on every request
+const POLICY = 'Cancellation: 72 hours or more before check-in, 100% refund. 48 to 72 hours, 50% refund. Under 48 hours or no-show, no refund. Refunds go to the original payment method in 5 to 7 working days.';
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const inr = (n) => 'Rs. ' + Math.round(n).toLocaleString('en-IN');
+const fmtLong = (s) => new Date(utc(s)).toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
+const queue = (p) => {
+  const q = Promise.resolve(p).catch((e) => console.error('background', e && e.message));
+  if (CTX && CTX.waitUntil) CTX.waitUntil(q);
+};
+
+/* secret links: the slip link and the cancel link carry a signature that only this Worker can make */
+const linkKey = () => ENV.LINK_SECRET || ENV.RAZORPAY_WEBHOOK_SECRET || ENV.SUPABASE_SERVICE_ROLE_KEY || '';
+const siteUrl = () => String(ENV.SITE_URL || allowedOrigins()[0] || '').replace(/\/+$/, '');
+const tok = async (kind, ref) => (await hmac(linkKey(), kind + '|' + ref)).slice(0, 24);
+const validRef = (r) => /^[GR]\d{3,8}$/.test(String(r || ''));
+const okTok = async (kind, ref, k) => validRef(ref) && !!k && same(await tok(kind, ref), String(k));
+async function links(ref) {
+  const [s, c] = await Promise.all([tok('slip', ref), tok('cancel', ref)]);
+  return { slipUrl: BASE + '/slip?ref=' + ref + '&k=' + s, cancelUrl: siteUrl() + '/cancel.html?ref=' + ref + '&k=' + c };
+}
+
+/* ---------- reading a booking back ---------- */
+async function loadByRef(ref) {
+  if (!validRef(ref)) return [];
+  const rows = ref[0] === 'G'
+    ? await sb('docs?coll=eq.res&select=data&order=path.asc&data-%3E%3Egrp=eq.' + enc(ref))
+    : await sb('docs?path=eq.' + enc('res/' + ref) + '&select=data&limit=1');
+  return (rows || []).map((x) => x.data).filter((r) => r && r.web);
+}
+async function hotelInfo() {
+  const [h, p] = await Promise.all([getDoc('pms/hotel'), getDoc('pms/plans')]);
+  return { hotel: (h && h.hotel) || {}, tax: p && Number.isFinite(+p.tax) ? +p.tax : 5 };
+}
+const occTxt = (r) => {
+  const k = r.kidAges || [];
+  return r.adults + (r.adults === 1 ? ' adult' : ' adults') + (k.length ? ', ' + k.length + (k.length === 1 ? ' child' : ' children') + ' (age ' + k.map((a) => (a === 0 ? '<1' : a)).join(', ') + ')' : '');
+};
+function moneyOf(recs, taxPct) {
+  let room = 0, tax = 0, paid = 0;
+  recs.forEach((r) => {
+    const rm = sum(Object.values(r.nr || {})) || (+r.rate || 0) * nightsBetween(r.in, r.out);
+    room += rm; tax += Math.round((rm * taxPct) / 100);
+    (r.pays || []).forEach((p) => { paid += +p.amt || 0; });
+  });
+  return { room, tax, total: room + tax, paid };
+}
+function bookingDoc(recs, hotel, taxPct) {
+  const r0 = recs[0], on = recs.flatMap((r) => r.pays || []).find((p) => p.mode === 'Razorpay');
+  return {
+    ref: r0.grp || r0.id, name: r0.guest, phone: r0.phone, email: r0.email,
+    in: r0.in, out: r0.out, nights: nightsBetween(r0.in, r0.out),
+    rooms: recs.map((r, i) => 'Room ' + (i + 1) + ': ' + (r.rtype || 'Room') + ', ' + occTxt(r)),
+    money: moneyOf(recs, taxPct), taxPct, payRef: on ? on.ref : '', status: r0.status, refund: r0.webRefund || null,
+    hotel: { name: hotel.name || 'Hotel Vijay', phone: hotel.phone || '', addr: hotel.addr || hotel.address || ENV.HOTEL_ADDRESS || '' },
+  };
+}
+
+/* ---------- PDF booking slip (plain one page PDF, no library needed) ---------- */
+function pdfSlip(d) {
+  const clean = (s) => String(s == null ? '' : s).replace(/\u20b9/g, 'Rs.').replace(/[\u2013\u2014]/g, '-').replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/[^\x20-\x7e]/g, '?');
+  const pe = (s) => clean(s).replace(/([\\()])/g, '\\$1');
+  const wrap = (s, n) => {
+    const out = []; let cur = '';
+    clean(s).split(' ').forEach((w) => { if ((cur + ' ' + w).trim().length > n) { out.push(cur); cur = w; } else cur = (cur + ' ' + w).trim(); });
+    if (cur) out.push(cur);
+    return out;
+  };
+  let c = '';
+  const text = (x, y, s, size, bold, rgb) => { c += 'BT /' + (bold ? 'F2' : 'F1') + ' ' + size + ' Tf ' + (rgb || '0.11 0.17 0.18') + ' rg 1 0 0 1 ' + x + ' ' + y + ' Tm (' + pe(s) + ') Tj ET\n'; };
+  const rect = (x, y, w, h, rgb) => { c += rgb + ' rg ' + x + ' ' + y + ' ' + w + ' ' + h + ' re f\n'; };
+  const rule = (y) => { c += '0.85 0.88 0.89 RG 0.6 w 40 ' + y + ' m 555 ' + y + ' l S\n'; };
+  const GREY = '0.4 0.45 0.47', cancelled = d.status === 'cancelled', m = d.money;
+
+  rect(0, 752, 595, 90, '0.055 0.478 0.549');
+  text(40, 806, d.hotel.name, 22, true, '1 1 1');
+  text(40, 786, cancelled ? 'Booking slip - CANCELLED' : 'Booking confirmation', 12, false, '1 1 1');
+  text(40, 768, [d.hotel.phone ? 'Phone ' + d.hotel.phone : '', d.hotel.addr].filter(Boolean).join('   '), 9, false, '1 1 1');
+  text(40, 722, 'Booking number', 10, false, GREY);
+  text(40, 700, d.ref, 22, true);
+  if (cancelled) text(400, 704, 'CANCELLED', 16, true, '0.7 0.2 0.18');
+
+  let y = 668;
+  const row = (label, value, bold) => {
+    const ls = wrap(value, 62);
+    text(40, y, label, 10, false, GREY);
+    ls.forEach((l, i) => { text(170, y - i * 15, l, 11, !!bold); });
+    y -= Math.max(1, ls.length) * 15 + 7;
+  };
+  row('Guest', d.name);
+  row('Mobile', d.phone);
+  row('Check-in', fmtLong(d.in) + ', after 10:00 AM');
+  row('Check-out', fmtLong(d.out) + ', by 9:00 AM');
+  row('Nights', String(d.nights));
+  d.rooms.forEach((r, i) => row(i === 0 ? 'Rooms' : '', r));
+  y -= 4; rule(y + 8); y -= 10;
+  row('Room charges', inr(m.room));
+  row('GST (' + d.taxPct + '%)', inr(m.tax));
+  row('Total', inr(m.total), true);
+  if (m.paid > 0) row('Paid online', inr(m.paid) + (d.payRef ? '  (Razorpay ' + d.payRef + ')' : ''));
+  if (!cancelled) row('Balance at hotel', inr(Math.max(0, m.total - m.paid)), true);
+  if (cancelled && d.refund) row('Refund', inr(d.refund.amt) + ' (' + d.refund.pct + '%), to the original payment method in 5 to 7 working days');
+  y -= 4; rule(y + 8); y -= 14;
+  const notes = [
+    'Please show this slip at check-in and carry a valid photo ID for every adult and for children aged 5 and above.',
+    'Your room number is given at check-in.',
+    POLICY,
+    'Bihar is a dry state: liquor and intoxicants are not allowed in the hotel.',
+  ];
+  notes.forEach((n) => { wrap(n, 100).forEach((l) => { text(40, y, l, 9, false, GREY); y -= 12; }); y -= 4; });
+
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>',
+    '<< /Length ' + c.length + ' >>\nstream\n' + c + 'endstream',
+  ];
+  let out = '%PDF-1.4\n';
+  const off = [];
+  objs.forEach((o, i) => { off.push(out.length); out += (i + 1) + ' 0 obj\n' + o + '\nendobj\n'; });
+  const xr = out.length;
+  out += 'xref\n0 ' + (objs.length + 1) + '\n0000000000 65535 f \n' + off.map((x) => String(x).padStart(10, '0') + ' 00000 n \n').join('') +
+    'trailer\n<< /Size ' + (objs.length + 1) + ' /Root 1 0 R >>\nstartxref\n' + xr + '\n%%EOF';
+  const bytes = new Uint8Array(out.length);
+  for (let i = 0; i < out.length; i++) bytes[i] = out.charCodeAt(i) & 255;
+  return bytes;
+}
+
+/* ---------- e-mail through the Gmail API (uses the GOOGLE_* settings) ---------- */
+let GTOK = { v: '', exp: 0 };
+async function googleToken() {
+  if (GTOK.v && Date.now() < GTOK.exp) return GTOK.v;
+  const r = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: ENV.GOOGLE_CLIENT_ID, client_secret: ENV.GOOGLE_CLIENT_SECRET, refresh_token: ENV.GOOGLE_REFRESH_TOKEN, grant_type: 'refresh_token' }).toString(),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.access_token) throw new Error('Google sign-in failed ' + r.status + ' ' + (j.error || '') + ' ' + (j.error_description || ''));
+  GTOK = { v: j.access_token, exp: Date.now() + Math.max(60, (j.expires_in || 3600) - 120) * 1000 };
+  return GTOK.v;
+}
+const toB64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192)); return btoa(s); };
+const wrap76 = (s) => s.replace(/.{1,76}/g, '$&\r\n');
+function buildMime({ to, subject, html, file }) {
+  const bd = 'hv' + crypto.randomUUID().replace(/-/g, '');
+  const head = ['To: ' + to];
+  if (ENV.MAIL_FROM) head.push('From: ' + ENV.MAIL_FROM);
+  head.push('Subject: =?UTF-8?B?' + toB64(new TextEncoder().encode(subject)) + '?=', 'MIME-Version: 1.0', 'Content-Type: multipart/mixed; boundary="' + bd + '"');
+  let m = head.join('\r\n') + '\r\n\r\n';
+  m += '--' + bd + '\r\nContent-Type: text/html; charset="UTF-8"\r\nContent-Transfer-Encoding: base64\r\n\r\n' + wrap76(toB64(new TextEncoder().encode(html))) + '\r\n';
+  if (file) m += '--' + bd + '\r\nContent-Type: application/pdf; name="' + file.name + '"\r\nContent-Disposition: attachment; filename="' + file.name + '"\r\nContent-Transfer-Encoding: base64\r\n\r\n' + wrap76(toB64(file.bytes)) + '\r\n';
+  return m + '--' + bd + '--';
+}
+async function sendMail(m) {
+  if (!(ENV.GOOGLE_CLIENT_ID && ENV.GOOGLE_CLIENT_SECRET && ENV.GOOGLE_REFRESH_TOKEN)) { console.error('mail: GOOGLE_* settings are missing'); return false; }
+  const raw = btoa(buildMime(m)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const r = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + (await googleToken()), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ raw }),
+  });
+  if (!r.ok) {
+    if (r.status === 401) GTOK = { v: '', exp: 0 };
+    const t = await r.text().catch(() => '');
+    throw new Error('Gmail ' + r.status + ' ' + t.slice(0, 200));
+  }
+  return true;
+}
+
+/* o = { intro, buttons: [[url, label, solid]], extra: html } */
+function mailHtml(d, o) {
+  const m = d.money, h = d.hotel;
+  const row = (a, b) => '<tr><td style="padding:6px 0;color:#5b6a6e;width:36%;vertical-align:top">' + esc(a) + '</td><td style="padding:6px 0;font-weight:600;text-align:right">' + b + '</td></tr>';
+  const btn = (b) => '<a href="' + esc(b[0]) + '" style="display:inline-block;padding:11px 18px;margin:4px 8px 4px 0;border-radius:8px;text-decoration:none;font-weight:600;' + (b[2] ? 'background:#0e7a8c;color:#fff' : 'border:1px solid #0e7a8c;color:#0e7a8c') + '">' + esc(b[1]) + '</a>';
+  return '<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;color:#1d2b2f;line-height:1.5">' +
+    '<div style="background:#0e7a8c;color:#fff;padding:18px 22px;border-radius:10px 10px 0 0"><div style="font-size:20px;font-weight:700">' + esc(h.name) + '</div>' +
+    '<div style="font-size:13px;opacity:.92">Booking number ' + esc(d.ref) + '</div></div>' +
+    '<div style="border:1px solid #d9e0e2;border-top:0;padding:20px 22px;border-radius:0 0 10px 10px">' +
+    '<p style="margin:0 0 14px">' + o.intro + '</p>' +
+    '<table style="width:100%;border-collapse:collapse;border-top:1px solid #e5eaec">' +
+    row('Guest', esc(d.name) + '<br><span style="font-weight:400">' + esc(d.phone) + '</span>') +
+    row('Check-in', esc(fmtLong(d.in)) + '<br><span style="font-weight:400">after 10:00 AM</span>') +
+    row('Check-out', esc(fmtLong(d.out)) + '<br><span style="font-weight:400">by 9:00 AM, ' + d.nights + (d.nights === 1 ? ' night' : ' nights') + '</span>') +
+    row('Rooms', d.rooms.map((r) => esc(r)).join('<br>')) +
+    row('Total with GST', esc(inr(m.total))) +
+    (m.paid > 0 ? row('Paid online', esc(inr(m.paid))) : '') +
+    (d.status !== 'cancelled' ? row('Balance at hotel', esc(inr(Math.max(0, m.total - m.paid)))) : '') +
+    '</table>' + (o.extra || '') +
+    (o.buttons && o.buttons.length ? '<p style="margin:18px 0 6px">' + o.buttons.map(btn).join('') + '</p>' : '') +
+    '<p style="font-size:12px;color:#5b6a6e;margin:14px 0 0">' + esc(POLICY) + ' Please carry a valid photo ID for every adult. Bihar is a dry state: liquor and intoxicants are not allowed.</p>' +
+    '<p style="font-size:12px;color:#5b6a6e;margin:8px 0 0">' + esc(h.name) + (h.phone ? ', phone ' + esc(h.phone) : '') + (h.addr ? ', ' + esc(h.addr) : '') + '</p>' +
+    '</div></div>';
+}
+
+/* After a booking is saved: slip e-mail to the guest and a copy to the hotel. Never blocks or breaks the booking. */
+async function sendConfirmation(recs, hotel, taxPct) {
+  const d = bookingDoc(recs, hotel, taxPct), L = await links(d.ref);
+  const file = { name: 'HotelVijay-' + d.ref + '.pdf', bytes: pdfSlip(d) };
+  const jobs = [];
+  if (d.email && (await claim('web/mail-' + d.ref))) {
+    jobs.push(sendMail({
+      to: d.email, subject: 'Booking confirmed ' + d.ref + ' - ' + d.hotel.name + ', ' + fmtLong(d.in), file,
+      html: mailHtml(d, { intro: 'Thank you, ' + esc(d.name) + '. Your booking is confirmed. Your booking slip is attached. Please show it at check-in.', buttons: [[L.slipUrl, 'Download booking slip', 1], [L.cancelUrl, 'Cancel booking', 0]] }),
+    }));
+  }
+  if (ENV.HOTEL_EMAIL) {
+    jobs.push(sendMail({
+      to: ENV.HOTEL_EMAIL, subject: 'New website booking ' + d.ref + ' - ' + d.name + ', ' + fmtLong(d.in), file,
+      html: mailHtml(d, { intro: 'New booking from the website.' + (d.money.paid > 0 ? ' Paid online through Razorpay (' + esc(d.payRef) + ').' : ' Pay at the hotel.') }),
+    }));
+  }
+  (await Promise.allSettled(jobs)).forEach((r) => { if (r.status === 'rejected') console.error('mail', r.reason && r.reason.message); });
+}
+
+/* ---------- cancellation ---------- */
+/* Refund rule (same as the policy shown on the website): 72 hours or more 100%, 48 to 72 hours 50%, less than 48 hours none.
+   Counted to 10:00 AM IST on the check-in date. Only the amount paid online is refunded. */
+function cancelView(ref, recs, hotel) {
+  const on = recs.flatMap((r) => r.pays || []).find((p) => p.mode === 'Razorpay' && p.ref);
+  const paid = on ? +on.amt || 0 : 0;
+  const hrs = (Date.parse(recs[0].in + 'T10:00:00+05:30') - Date.now()) / 36e5;
+  const pct = hrs >= 72 ? 100 : hrs >= 48 ? 50 : 0;
+  const status = recs.every((r) => r.status === 'cancelled') ? 'cancelled' : recs.every((r) => r.status === 'reserved') ? 'reserved' : 'other';
+  let reason = '';
+  if (status === 'cancelled') reason = 'This booking is already cancelled.';
+  else if (status !== 'reserved') reason = 'This booking cannot be cancelled online. Please call the hotel.';
+  else if (hrs <= 0) reason = 'Check-in time has passed. Please call the hotel.';
+  return {
+    payId: on ? on.ref : '',
+    view: {
+      ok: true, ref, name: recs[0].guest, in: recs[0].in, out: recs[0].out, nights: nightsBetween(recs[0].in, recs[0].out),
+      rooms: recs.map((r) => (r.rtype || 'Room') + ', ' + occTxt(r)), status, canCancel: !reason, reason,
+      paid, pct, refund: Math.floor((paid * pct) / 100), hours: Math.floor(hrs),
+      refunded: (recs[0].webRefund && recs[0].webRefund.amt) || 0,
+      hotel: { name: hotel.name || 'Hotel Vijay', phone: hotel.phone || '' },
+    },
+  };
+}
+
+async function doCancel(ref) {
+  const recs = await loadByRef(ref);
+  if (!recs.length) return { status: 404, body: { ok: false, error: 'Booking not found.' } };
+  const { hotel, tax } = await hotelInfo();
+  const cv = cancelView(ref, recs, hotel), v = cv.view;
+  if (!v.canCancel) return { status: 409, body: { ok: false, error: v.reason } };
+
+  // one cancellation at a time, and a refund is never made twice
+  const lockPath = 'web/cancel-' + ref;
+  let lk = null;
+  if (!(await claim(lockPath))) {
+    lk = await getDoc(lockPath);
+    if (!(lk && lk.refundId)) {
+      if (lk && Date.now() - lk.at > 60000) { await deleteDoc(lockPath); if (!(await claim(lockPath))) lk = { busy: 1 }; else lk = null; } else lk = { busy: 1 };
+    }
+    if (lk && lk.busy) return { status: 409, body: { ok: false, error: 'Your cancellation is being processed. Please wait a minute and refresh this page.' } };
+  }
+
+  let refundId = (lk && lk.refundId) || '', refundAmt = (lk && lk.amt) || 0;
+  if (!refundId && v.refund > 0 && cv.payId) {
+    try {
+      const rf = await rzp('payments/' + enc(cv.payId) + '/refund', { method: 'POST', body: { amount: v.refund * 100, notes: { reason: 'Guest cancelled', booking: ref } } });
+      refundId = rf.id; refundAmt = v.refund;
+      await upsertDocs([{ path: lockPath, coll: 'web', data: { at: Date.now(), refundId, amt: refundAmt }, updated_at: new Date().toISOString() }]);
+    } catch (e) {
+      console.error('cancel refund', e.message);
+      await deleteDoc(lockPath).catch(() => {});
+      return { status: 502, body: { ok: false, error: 'The refund could not be started, so your booking is NOT cancelled. Please try again in a few minutes or call the hotel.' } };
+    }
+  }
+
+  const stamp = new Date().toISOString();
+  const upd = recs.map((r, i) => ({
+    ...r, status: 'cancelled', cancelledAt: stamp, cancelBy: 'Guest (website)',
+    ...(i === 0 && refundId ? { webRefund: { amt: refundAmt, id: refundId, pct: v.pct, at: stamp } } : {}),
+  }));
+  try {
+    await upsertDocs(upd.map((r) => ({ path: 'res/' + r.id, coll: 'res', data: r, updated_at: stamp })));
+  } catch (e) {
+    console.error('cancel save', e.message);
+    return { status: 500, body: { ok: false, error: refundId ? 'Your refund has been started but we could not update the booking. Please call the hotel.' : 'Could not cancel the booking. Please call the hotel.' } };
+  }
+  queue(sendCancelMails(upd, hotel, tax, v));
+  return { status: 200, body: { ok: true, ref, refund: refundAmt, pct: v.pct, hotel: v.hotel } };
+}
+
+async function sendCancelMails(recs, hotel, taxPct, v) {
+  const d = bookingDoc(recs, hotel, taxPct);
+  const file = { name: 'HotelVijay-' + d.ref + '-cancelled.pdf', bytes: pdfSlip(d) };
+  const refundLine = d.refund && d.refund.amt > 0
+    ? '<p style="margin:14px 0 0;padding:10px 12px;background:#eef7f8;border-radius:8px"><b>Refund: ' + esc(inr(d.refund.amt)) + '</b> (' + d.refund.pct + '% as per the cancellation policy). It goes to your original payment method in 5 to 7 working days.</p>'
+    : '<p style="margin:14px 0 0;padding:10px 12px;background:#f6f3ee;border-radius:8px">' + (v.paid > 0 ? 'No refund applies, because the booking was cancelled less than 48 hours before check-in.' : 'Nothing was paid online, so there is nothing to refund.') + '</p>';
+  const jobs = [];
+  if (d.email) jobs.push(sendMail({ to: d.email, subject: 'Booking cancelled ' + d.ref + ' - ' + d.hotel.name, file, html: mailHtml(d, { intro: 'Hello ' + esc(d.name) + ', your booking has been cancelled.', extra: refundLine }) }));
+  if (ENV.HOTEL_EMAIL) jobs.push(sendMail({ to: ENV.HOTEL_EMAIL, subject: 'Booking CANCELLED by guest ' + d.ref + ' - ' + d.name, file, html: mailHtml(d, { intro: 'The guest cancelled this booking on the website. The rooms are free again.', extra: refundLine }) }));
+  (await Promise.allSettled(jobs)).forEach((r) => { if (r.status === 'rejected') console.error('mail', r.reason && r.reason.message); });
+}
+
 /* ---------- web handling ---------- */
 const allowedOrigins = () =>
   String(ENV.ALLOWED_ORIGINS || 'https://hvijayniketan.github.io')
@@ -642,9 +950,12 @@ function loadSettings(env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     loadSettings(env);
-    const path = new URL(request.url).pathname.replace(/\/+$/, '');
+    CTX = ctx || null;
+    const U = new URL(request.url), ai = U.pathname.indexOf('/api');
+    BASE = U.origin + (ai >= 0 ? U.pathname.slice(0, ai + 4) : '/api');
+    const path = U.pathname.replace(/\/+$/, '');
     try {
       if (request.method === 'OPTIONS') return reply(request, 204, {});
       if (!corsHeaders(request).originOk) return reply(request, 403, { ok: false, error: 'Not allowed from this site' });
@@ -699,6 +1010,46 @@ export default {
           try { await finalizePaid(pe.order_id, pe.id); } catch (e) { console.error('webhook', e.message); return reply(request, 500, { ok: false }); }
         }
         return reply(request, 200, { ok: true });
+      }
+
+      if (path.endsWith('/slip')) { // booking slip as a PDF, opened from the e-mail or the confirmation page
+        if (request.method !== 'GET') return reply(request, 405, { ok: false, error: 'Method not allowed' });
+        if (tooMany(request, 'slip', 30, 10 * 60 * 1000)) return reply(request, 429, { ok: false, error: 'Too many requests. Please wait a few minutes.' });
+        const q = new URL(request.url).searchParams, ref = cleanText(q.get('ref'), 12);
+        if (!(await okTok('slip', ref, cleanText(q.get('k'), 60)))) return reply(request, 403, { ok: false, error: 'This link is not valid.' });
+        try {
+          const recs = await loadByRef(ref);
+          if (!recs.length) return reply(request, 404, { ok: false, error: 'Booking not found.' });
+          const { hotel, tax } = await hotelInfo();
+          return new Response(pdfSlip(bookingDoc(recs, hotel, tax)), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="HotelVijay-' + ref + '.pdf"', 'Cache-Control': 'no-store' } });
+        } catch (e) {
+          console.error('slip', e.message);
+          return reply(request, 500, { ok: false, error: 'Could not open the slip right now. Please call the hotel.' });
+        }
+      }
+
+      if (path.endsWith('/cancel')) { // GET shows what a cancellation would refund, POST cancels
+        if (request.method !== 'GET' && request.method !== 'POST') return reply(request, 405, { ok: false, error: 'Method not allowed' });
+        if (tooMany(request, 'cancel', 20, 10 * 60 * 1000)) return reply(request, 429, { ok: false, error: 'Too many attempts. Please call the hotel.' });
+        let ref, k;
+        if (request.method === 'GET') {
+          const q = new URL(request.url).searchParams; ref = cleanText(q.get('ref'), 12); k = cleanText(q.get('k'), 60);
+        } else {
+          let x;
+          try { x = JSON.parse((await request.text()) || '{}'); } catch (e) { return reply(request, 400, { ok: false, error: 'Invalid request.' }); }
+          ref = cleanText(x.ref, 12); k = cleanText(x.k, 60);
+        }
+        if (!(await okTok('cancel', ref, k))) return reply(request, 403, { ok: false, error: 'This cancel link is not valid. Please call the hotel.' });
+        try {
+          if (request.method === 'POST') { const r = await doCancel(ref); return reply(request, r.status, r.body); }
+          const recs = await loadByRef(ref);
+          if (!recs.length) return reply(request, 404, { ok: false, error: 'Booking not found.' });
+          const { hotel } = await hotelInfo();
+          return reply(request, 200, cancelView(ref, recs, hotel).view);
+        } catch (e) {
+          console.error('cancel', e.message);
+          return reply(request, 500, { ok: false, error: 'Could not complete this right now. Please call the hotel.' });
+        }
       }
 
       if (path.endsWith('/book')) {
