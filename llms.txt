@@ -1,0 +1,16 @@
+# Hotel Vijay, Rajgir
+> Hotel Vijay is a family hotel in Rajgir, Bihar, India (PIN 803116), beside Ram Krishna Math on Hot Spring Road, Bangali Para. It has 33 rooms (Non-AC, AC and Family rooms), free Wi-Fi, free parking, a lift, a restaurant and a 24/7 front desk. Phone and WhatsApp: +91 98356 20220.
+
+## Main pages
+- [Home](https://hvijayniketan.github.io/): Hotel in Rajgir Bihar overview
+- [Rooms](https://hvijayniketan.github.io/rooms.html): Non-AC, AC and Family rooms
+- [Book online](https://hvijayniketan.github.io/book.html): live rates and booking
+- [Location](https://hvijayniketan.github.io/location.html): address, map and distances
+- [Gallery](https://hvijayniketan.github.io/gallery.html): photos of the hotel and rooms
+- [Policies](https://hvijayniketan.github.io/policies.html): check-in, cancellation and liquor policy
+
+## Guides
+- [Where to stay in Rajgir](https://hvijayniketan.github.io/where-to-stay-in-rajgir.html)
+- [How to reach Rajgir](https://hvijayniketan.github.io/how-to-reach-rajgir.html)
+- [Best time to visit Rajgir](https://hvijayniketan.github.io/best-time-to-visit-rajgir.html)
+- [Rajgir tourist places](https://hvijayniketan.github.io/tourist-places.html)

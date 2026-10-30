@@ -2,4 +2,3 @@ User-agent: *
 Allow: /
 
 Sitemap: https://hvijayniketan.github.io/sitemap.xml
-google-site-verification=kRkaqgRBEAUmcLdtpjxkaJAeF1X6insQCcLtNbSLyIs
