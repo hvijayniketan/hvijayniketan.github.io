@@ -88,7 +88,7 @@
 .hvb .sum{border:1px solid rgba(127,127,127,.3);border-radius:10px;padding:12px 14px;margin:10px 0;background:rgba(127,127,127,.05)}\
 .hvb .sum div{padding:3px 0}\
 .hvb .was{text-decoration:line-through;opacity:.6}.hvb .promo{color:var(--a);font-weight:600;opacity:1!important}\
-.hvb .ph{width:130px;height:92px;object-fit:cover;border-radius:8px;flex:0 0 auto}.hvb .am{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.hvb .am i{font-style:normal;font-size:.75em;border:1px solid rgba(127,127,127,.35);border-radius:20px;padding:2px 9px}.hvb .pl{border:1px solid rgba(127,127,127,.3);border-radius:10px;padding:12px 14px;margin-top:14px;font-size:.88em;background:rgba(127,127,127,.05)}.hvb .pl b{display:block;margin-bottom:4px}@media(max-width:560px){.hvb .opt{flex-wrap:wrap}.hvb .ph{width:100%;height:150px}}\
+.hvb .ph{width:130px;height:92px;object-fit:cover;border-radius:8px;flex:0 0 auto}.hvb .am{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.hvb .am i{font-style:normal;font-size:.75em;border:1px solid rgba(127,127,127,.35);border-radius:20px;padding:2px 9px}.hvb .pl{border:1px solid rgba(127,127,127,.3);border-radius:10px;padding:12px 14px;margin-top:14px;font-size:.88em;background:rgba(127,127,127,.05)}.hvb .pl b{display:block;margin-bottom:4px}@media(max-width:560px){.hvb .opt{flex-wrap:wrap}.hvb .ph{width:100%;height:150px}}.hvb .opt.rc{position:relative;align-items:stretch;gap:0;padding:0;overflow:hidden;border-radius:12px;transition:border-color .2s,box-shadow .2s}.hvb .opt.rc:hover:not(.dis){border-color:var(--a)}.hvb .opt.rc.sel{border-color:var(--a);box-shadow:0 0 0 1px var(--a)}.hvb .rc input[type=radio]{position:absolute;opacity:0;pointer-events:none}.hvb .rc .ph{width:240px;height:auto;min-height:180px;border-radius:0;align-self:stretch}.hvb .rc .rt{padding:16px 18px;flex:1;min-width:0}.hvb .rc .rt>b{font-size:1.25em;display:block}.hvb .rc .meta{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:.84em;opacity:.85;margin:6px 0 2px}.hvb .rc .am i:before{content:"✓ ";color:var(--a)}.hvb .rc .pr{padding:16px 18px;display:flex;flex-direction:column;justify-content:center;align-items:flex-end;text-align:right;min-width:160px;border-left:1px solid rgba(127,127,127,.22)}.hvb .rc .pr>b{font-size:1.5em}.hvb .rc .pick{display:inline-block;margin-top:12px;border:1px solid var(--a);color:var(--a);border-radius:8px;padding:8px 22px;font-size:.88em;font-weight:600}.hvb .opt.rc.sel .pick{background:var(--a);color:' + ON + '}.hvb .rc input:focus-visible~.pr .pick{outline:2px solid var(--a);outline-offset:2px}@media(max-width:700px){.hvb .opt.rc{flex-direction:column}.hvb .rc .ph{width:100%;height:200px;min-height:0}.hvb .rc .pr{align-items:flex-start;text-align:left;border-left:0;border-top:1px solid rgba(127,127,127,.22);flex-direction:row;flex-wrap:wrap;gap:4px 14px;align-items:center}.hvb .rc .pick{margin:0 0 0 auto}}\
 ' + (DARK ? '.hvb input,.hvb select{color-scheme:dark}' : '') + '\
 ';
   var st = document.createElement('style');
@@ -101,7 +101,11 @@
   var ymd = function (d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
   var addDays = function (s, n) { var d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + n); return ymd(d); };
   var fmtD = function (s) { var p = s.split('-'); return p[2] + '/' + p[1] + '/' + p[0]; };
-  var title = function (t) { return (INFO[t] && INFO[t].title) || t; };
+  var norm = function (x) { return String(x || '').toLowerCase().replace(/\s+/g, ' ').trim(); };
+  var INFOL = {}; Object.keys(INFO || {}).forEach(function (k) { INFOL[norm(k)] = INFO[k]; });
+  var getInfo = function (t) { return (INFO && INFO[t]) || INFOL[norm(t)] || {}; };
+  var title = function (t) { return getInfo(t).title || t; };
+  var metaOf = function (i) { var m = []; if (i.bed) m.push('\ud83d\udecf ' + esc(i.bed)); if (i.guests) m.push('\ud83d\udc65 ' + esc(i.guests)); if (i.size) m.push('\ud83d\udcd0 ' + esc(i.size)); return m.length ? '<span class="meta">' + m.map(function (x) { return '<span>' + x + '</span>'; }).join('') + '</span>' : ''; };
   var plural = function (n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); };
   var ageTxt = function (a) { return +a === 0 ? 'under 1 year' : plural(+a, 'year'); };
   function occLabel(r) {
@@ -206,18 +210,18 @@
         var ok = fits(t.type, r), left = t.free - usedOf(t.type, i), sel = S.pick[i] === t.type;
         var disabled = !ok || (left <= 0 && !sel);
         if (ok && left > 0) any = true;
-        var p = ok ? roomPrice(t.type, r) : null, inf = INFO[t.type] || {};
-        h += '<label class="opt' + (sel ? ' sel' : '') + (disabled ? ' dis' : '') + '"><input type="radio" name="rp' + i + '" data-r="' + i + '" data-t="' + esc(t.type) + '"' + (sel ? ' checked' : '') + (disabled ? ' disabled' : '') + '>' +
+        var p = ok ? roomPrice(t.type, r) : null, inf = getInfo(t.type);
+        h += '<label class="opt rc' + (sel ? ' sel' : '') + (disabled ? ' dis' : '') + '"><input type="radio" name="rp' + i + '" data-r="' + i + '" data-t="' + esc(t.type) + '"' + (sel ? ' checked' : '') + (disabled ? ' disabled' : '') + '>' +
           (inf.img ? '<img class="ph" loading="lazy" alt="' + esc(title(t.type)) + '" src="' + esc(inf.img) + '">' : '') +
-          '<span class="rt"><b>' + esc(title(t.type)) + '</b>' + (inf.desc ? '<small>' + esc(inf.desc) + '</small>' : '') + (inf.am && inf.am.length ? '<span class="am">' + inf.am.map(function (a) { return '<i>' + esc(a) + '</i>'; }).join('') + '</span>' : '') + (p && p.incl.length ? '<small class="promo">Includes: ' + esc(p.incl.join(', ')) + '</small>' : '') +
+          '<span class="rt"><b>' + esc(title(t.type)) + '</b>' + metaOf(inf) + (inf.desc ? '<small>' + esc(inf.desc) + '</small>' : '') + (inf.am && inf.am.length ? '<span class="am">' + inf.am.map(function (a) { return '<i>' + esc(a) + '</i>'; }).join('') + '</span>' : '') + (p && p.incl.length ? '<small class="promo">Includes: ' + esc(p.incl.join(', ')) + '</small>' : '') +
           (!ok ? '<small>Not suitable for this group. ' + esc(ruleFor(t.type).msg) + '</small>' : t.free === 0 ? '<small class="low">' + esc(t.reason || 'Sold out') + '</small>' : (t.free <= 3 ? '<small class="low">Only ' + t.free + ' left</small>' : '')) + '</span>' +
-          (p ? '<span class="pr">' + (p.was > p.total ? '<small class="was">' + money(p.was) + '</small>' : '') + '<b>' + money(p.total) + '</b>' + (p.promo ? '<small class="promo">' + esc(p.promo) + '</small>' : '') + '<small>' + money(p.perNight) + ' a night + ' + (S.av.taxPct || 0) + '% GST</small></span>' : '') + '</label>';
+          (p ? '<span class="pr">' + (p.was > p.total ? '<small class="was">' + money(p.was) + '</small>' : '') + '<b>' + money(p.total) + '</b>' + (p.promo ? '<small class="promo">' + esc(p.promo) + '</small>' : '') + '<small>' + money(p.perNight) + ' a night + ' + (S.av.taxPct || 0) + '% GST</small>' + (!disabled ? '<span class="pick">' + (sel ? 'Selected \u2713' : 'Select') + '</span>' : '') + '</span>' : '') + '</label>';
       });
       if (!any) h += '<p class="mut">No room type is available for this group. Try adding another room or changing dates, or call the hotel.</p>';
       h += '</div>';
     });
     h += (S.av.codeOk === false ? '<p class="err">That coupon code is not valid for these dates.</p>' : S.av.codeOk ? '<p class="mut">Coupon applied.</p>' : '') + '<p class="err" role="alert">' + esc(S.err) + '</p>' +
-      '<div class="pl"><b>Policies</b>Check-in after 10:00 AM, check-out by 9:00 AM. Cancellation: 72+ hours before check-in 100% refund, 48 to 72 hours 50% refund, under 48 hours or no-show no refund. Refunds go to the original payment method in 5 to 7 working days. Bihar is a dry state: liquor and intoxicants are not allowed. <a href="index.html#policies" target="_blank" rel="noopener" style="color:inherit">Read full policies</a></div>' +
+      '<div class="pl"><b>Policies</b>Check-in after 10:00 AM, check-out by 9:00 AM. Cancellation: 72+ hours before check-in 100% refund, 48 to 72 hours 50% refund, under 48 hours or no-show no refund. Refunds go to the original payment method in 5 to 7 working days. Bihar is a dry state: liquor and intoxicants are not allowed. <a href="policies.html" target="_blank" rel="noopener" style="color:inherit">Read full policies</a></div>' +
       '<div class="bar"><div><b>' + plural(T.rooms, 'room') + ' selected</b>' + (T.rooms ? ', total ' + money(T.total) + ' including GST' : '') + '<div class="mut">' + (S.av && S.av.payOnline ? 'Pay securely online with Razorpay (UPI, cards, net banking).' : 'Pay at the hotel. No card needed.') + '</div></div>' +
       '<span><button id="hback2">Back</button> <button class="p" id="hnext"' + (allPicked ? '' : ' disabled') + '>Continue</button></span></div></div>';
     return h;
