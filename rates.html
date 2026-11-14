@@ -58,7 +58,9 @@ function ymd(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'
 function addD(s,n){var d=new Date(s+'T00:00:00');d.setDate(d.getDate()+n);return ymd(d)}
 function fmt(s){return new Date(s+'T00:00:00').toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'})}
 var TODAY=ymd(new Date());
-function opts(fam){return fam?[['4','4 adults'],['5','5 adults'],['6','6 adults']]:[['1','1 person'],['2','2 persons'],['3','3 persons'],['2c2','2 adults + 2 children']]}
+function nm(s){return s.replace(/non\s*-?\s*ac/i,'Non-AC').replace(/^ac\b/i,'AC')}
+function kidsOk(t){return Object.keys(t.days).some(function(d){return t.days[d].xc>0})}
+function opts(fam,kids){return fam?[['4','4 adults'],['5','5 adults'],['6','6 adults']]:[['1','1 person'],['2','2 persons'],['3','3 persons']].concat(kids?[['2c2','2 adults + 2 children']]:[])}
 function price(x,fam,g){ // price per night before GST for g
   var b=x.b;if(fam){var n=+g;return (x.p4||b)+(n>4?(n-4)*x.xa:0)}
   if(g==='1')return x.p1||x.p2||b;
@@ -66,13 +68,13 @@ function price(x,fam,g){ // price per night before GST for g
 function T(){return data.types[ti]}
 function load(){
   fetch(API+'?from='+TODAY).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(j){
-    data=j;if(ti>=j.types.length)ti=0;if(!ym)ym=TODAY.slice(0,7);
+    j.types.sort(function(a,b){var r=function(x){return x.fam?3:/non/i.test(x.name)?1:2};return r(a)-r(b)});data=j;if(ti>=j.types.length)ti=0;if(!ym)ym=TODAY.slice(0,7);
     $('note').innerHTML='Rates are per room per night, before GST ('+j.gst+'% added at booking). Rates and rooms can change; the final price is confirmed on the booking page.';
     draw()}).catch(function(){$('note').textContent='Rates could not be loaded right now. Please call the hotel or try again in a moment.'})}
 function draw(){
   if(!data)return;var t=T();
-  $('tabs').innerHTML=data.types.map(function(x,i){return '<button class="'+(i===ti?'on':'')+'" data-i="'+i+'">'+esc(x.name)+'</button>'}).join('');
-  var o=opts(t.fam);if(!o.some(function(a){return a[0]===gv}))gv=o[t.fam?0:1][0];
+  $('tabs').innerHTML=data.types.map(function(x,i){return '<button class="'+(i===ti?'on':'')+'" data-i="'+i+'">'+esc(nm(x.name))+'</button>'}).join('');
+  var o=opts(t.fam,kidsOk(t));if(!o.some(function(a){return a[0]===gv}))gv=o[t.fam?0:1][0];
   $('gs').innerHTML=o.map(function(a){return '<option value="'+a[0]+'"'+(a[0]===gv?' selected':'')+'>'+a[1]+'</option>'}).join('');
   var Y=+ym.slice(0,4),M=+ym.slice(5)-1,first=new Date(Y,M,1).getDay(),nd=new Date(Y,M+1,0).getDate();
   $('mn').textContent=new Date(Y,M,1).toLocaleString('en-IN',{month:'long',year:'numeric'});
@@ -92,10 +94,10 @@ function sum(){
   var t=T();if(!ci||!co){$('sum').innerHTML='';return}
   var tot=0,N=0;for(var d=ci;d<co;d=addD(d,1)){tot+=price(t.days[d],t.fam,gv);N++}
   var gst=Math.round(tot*data.gst/100);
-  $('sum').innerHTML='<div class="box"><b>'+esc(t.name)+'</b>, '+fmt(ci)+' to '+fmt(co)+' ('+N+' night'+(N>1?'s':'')+')<table>'
+  $('sum').innerHTML='<div class="box"><b>'+esc(nm(t.name))+'</b>, '+fmt(ci)+' to '+fmt(co)+' ('+N+' night'+(N>1?'s':'')+')<table>'
    +'<tr><td>Room charges (per room)</td><td>'+inr(tot)+'</td></tr><tr><td>GST '+data.gst+'%</td><td>'+inr(gst)+'</td></tr>'
    +'<tr class="tot"><td>Total per room</td><td>'+inr(tot+gst)+'</td></tr></table>'
-   +'<a class="btn" href="'+BOOK+'?checkin='+ci+'&checkout='+co+'&room='+encodeURIComponent(t.name)+'">Book these dates</a></div>'}
+   +'<a class="btn" href="'+BOOK+'?in='+ci+'&out='+co+'#hv-booking">Book these dates</a></div>'}
 function pick(d){
   var t=T(),x=t.days[d],m=$('msg');m.textContent='';
   if(!ci||co){ // start a new selection
