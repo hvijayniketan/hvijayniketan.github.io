@@ -1,6 +1,7 @@
 /*
  * Hotel Vijay booking server for Cloudflare Workers (v3: Razorpay online payment, prices from PMS Rates calendar,
  * Inventory rules and Promotions).  Two addresses:
+  if (new URL(request.url).pathname === '/api/calendar' && request.method === 'GET') return handleCalendar(request, env); 
  *   GET  /api/availability?in=YYYY-MM-DD&out=YYYY-MM-DD[&code=COUPON]
  *   POST /api/book              (with Razorpay keys: returns a payment order instead of booking)
  *   POST /api/pay/verify        (the guest's browser after paying)
@@ -1080,3 +1081,75 @@ export default {
     }
   },
 };
+
+async function handleCalendar(request, env) {
+  const origin = request.headers.get('Origin') || '';
+  const allowed = (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+  const hdr = {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'public, max-age=60',
+    'Access-Control-Allow-Origin': allowed.includes(origin) ? origin : (allowed[0] || ''),
+    'Vary': 'Origin'
+  };
+  try {
+    const u = new URL(request.url), iso = /^\d{4}-\d{2}-\d{2}$/;
+    const addD = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+    const today = new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10); // India time
+    let from = u.searchParams.get('from');
+    if (!iso.test(from || '') || from < today) from = today;
+    const to = addD(from, Math.min(+u.searchParams.get('days') || 200, 400));
+
+    const sb = q => fetch(env.SUPABASE_URL + '/rest/v1/docs?' + q, {
+      headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + env.SUPABASE_SERVICE_ROLE_KEY }
+    }).then(r => { if (!r.ok) throw new Error('db ' + r.status); return r.json(); });
+
+    const [docs, res] = await Promise.all([
+      sb('select=path,data&path=in.(pms/plans,pms/cal,pms/rooms)'),
+      sb('select=ci:data->>in,co:data->>out,status:data->>status,room:data->>room,rtype:data->>rtype&path=like.res/*&data->>out=gt.' + from + '&data->>in=lt.' + to)
+    ]);
+    const D = p => (docs.find(d => d.path === p) || {}).data || {};
+    const { plans = [], tax = 5 } = D('pms/plans');
+    const { cal = {}, blackouts = [] } = D('pms/cal');
+    const { rooms = [] } = D('pms/rooms');
+    const plan = plans.find(p => /room only/i.test(p.name)) || plans[0];
+    if (!plan) throw new Error('no rate plan');
+
+    const typeOf = r => r.room ? ((rooms.find(x => x.no === r.room) || {}).type || r.rtype || '') : (r.rtype || '');
+    const busy = res.filter(r => ['reserved', 'checked-in', 'checked-out'].includes(r.status));
+    const types = [...new Set(rooms.map(r => r.type))].map(t => {
+      const fam = /family/i.test(t);
+      const phys = rooms.filter(r => r.type === t && r.hk !== 'maintenance').length;
+      const def = k => {
+        if (k === 'b') return plan.prices && plan.prices[t] > 0 ? plan.prices[t] : 0;
+        const o = plan.occ && plan.occ[t]; if (!o) return 0;
+        if (k === 'xa') return o.extra > 0 ? o.extra : 0;
+        if (k === 'xc') return o.child > 0 ? o.child : 0;
+        const n = k === 'p1' ? 1 : k === 'p2' ? 2 : 4;
+        return o.prices && o.prices[n] > 0 ? o.prices[n] : 0;
+      };
+      const days = {};
+      for (let d = from; d < to; d = addD(d, 1)) {
+        const ov = (((cal.rate || {})[plan.id] || {})[t] || {})[d] || {};
+        const inv = ((cal.inv || {})[t] || {})[d] || {};
+        const wd = new Date(d + 'T00:00:00Z').getUTCDay();
+        const up = (wd === 5 || wd === 6) ? 1 + (plan.wk || 0) / 100 : 1; // Fri/Sat uplift, as in the PMS
+        const val = k => ov[k] != null ? ov[k] : (k === 'xa' || k === 'xc' ? def(k) : Math.round(def(k) * up));
+        const sold = busy.filter(r => r.ci <= d && d < r.co && typeOf(r) === t).length;
+        const toSell = inv.n != null ? Math.min(inv.n, phys) : phys;
+        const shut = !!inv.stop || blackouts.some(b => b.from <= d && d <= b.to);
+        const left = shut ? 0 : Math.max(0, toSell - sold);
+        const b = val('b'), p1 = val('p1'), p2 = val('p2'), p4 = val('p4');
+        days[d] = {
+          l: left, s: shut ? 1 : 0,
+          p: fam ? (p4 || b) : (Math.min(...[p1, p2].filter(Boolean)) || b),
+          p1, p2, p4, b, xa: val('xa'), xc: val('xc'),
+          min: inv.min || 0, max: inv.max || 0, cta: inv.cta ? 1 : 0, ctd: inv.ctd ? 1 : 0
+        };
+      }
+      return { name: t, fam, days };
+    });
+    return new Response(JSON.stringify({ updated: new Date().toISOString(), from, to, gst: tax, types }), { headers: hdr });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: 'Calendar unavailable' }), { status: 502, headers: { ...hdr, 'Cache-Control': 'no-store' } });
+  }
+}
